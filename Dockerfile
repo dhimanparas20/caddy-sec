@@ -11,6 +11,6 @@ FROM caddy:latest
 
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 
-# Healthcheck via Caddy's built-in admin API (plain HTTP, localhost only)
-HEALTHCHECK --interval=2m --timeout=5s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:2019/config/ || exit 1
+## Healthcheck via Caddy's built-in admin API (plain HTTP, localhost only)
+#HEALTHCHECK --interval=2m --timeout=5s --start-period=10s --retries=3 \
+#    CMD wget --no-verbose --tries=1 --spider http://localhost:2019/config/ || exit 1
