@@ -1,127 +1,190 @@
 # 🛡️ Caddy-Sec: The Hardened Web Proxy
 
-A custom, highly secure deployment of the [Caddy Web Server](https://caddyserver.com/), engineered for production environments. This repository provides a fully automated build system to compile Caddy with enterprise-grade security modules, transforming it from a standard reverse proxy into a robust Web Application Firewall (WAF) and automated bot-defense system.
+A pre-built, production-ready [Caddy Web Server](https://caddyserver.com/) image compiled with enterprise-grade security modules. No need to build from source — just pull and deploy.
 
-Perfect for cloud VPS deployments or edge devices like a Raspberry Pi.
+**Docker Hub:** [hub.docker.com/r/dhimanparas20/caddy](https://hub.docker.com/r/dhimanparas20/caddy)
 
----
+```bash
+docker pull dhimanparas20/caddy:latest
+```
 
-## 🏗️ Architecture & Philosophy
-
-The standard Caddy binary is phenomenal for automated HTTPS and easy routing, but it lacks native application-layer defense. `Caddy-Sec` implements a **Defense in Depth** architecture without sacrificing Caddy's signature performance.
-
-### The Four Pillars of Caddy-Sec
-
-1. **Intelligent Rate Limiting** (`mholt/caddy-ratelimit`)
-   * Prevents brute-force attacks and API spam by limiting requests per IP address across dynamic sliding windows.
-2. **Web Application Firewall** (`corazawaf/coraza-caddy/v2`)
-   * Deep packet inspection to block SQL Injections (SQLi), Cross-Site Scripting (XSS), and common vulnerability scanners (Nikto, Masscan) using OWASP Core Rule Sets.
-3. **Smart IP Bouncer** (`hslatman/caddy-crowdsec-bouncer/http`)
-   * Integrates with CrowdSec to automatically drop TCP connections from known malicious IP addresses, botnets, and DDoS nodes before they can even make an HTTP request.
-4. **Native Self-Healing** (Baked-in Healthcheck)
-   * A built-in Docker `HEALTHCHECK` using `wget` to continuously verify internal routing, meaning Docker Swarm or Compose can auto-restart the container if the routing engine hangs.
+> ✅ Supports **AMD64 (x86_64)** and **ARM64 (aarch64/Raspberry Pi)**
+> — a single `docker pull` automatically fetches the correct architecture.
 
 ---
 
-## 📂 Repository Structure
+## 📦 What's Inside
 
-* `Dockerfile`: A multi-stage build script using `xcaddy` to compile the Go binary with the required security modules and inject the native healthcheck.
-* `compose.yml`: A production-ready Docker Compose stack that builds the custom image and maps the necessary persistent volumes.
-* `README.md`: Documentation and configuration guides.
+This image is built on top of the official `caddy:latest` image with the following modules compiled in via [xcaddy](https://github.com/caddyserver/xcaddy):
+
+| Module | Purpose |
+|---|---|
+| [mholt/caddy-ratelimit](https://github.com/mholt/caddy-ratelimit) | Intelligent per-IP rate limiting with sliding windows |
+| [corazawaf/coraza-caddy/v2](https://github.com/corazawaf/coraza-caddy) | Web Application Firewall — blocks SQLi, XSS, and vulnerability scanners using OWASP rules |
+| [hslatman/caddy-crowdsec-bouncer](https://github.com/hslatman/caddy-crowdsec-bouncer) | CrowdSec integration — auto-bans known malicious IPs, botnets, and DDoS nodes |
+
+### Built-in Healthcheck
+
+The image includes a native Docker `HEALTHCHECK` that pings Caddy's built-in admin API:
+
+```
+http://localhost:2019/config/
+```
+
+Docker Compose, Swarm, and orchestrators like Portainer will automatically detect container health and can restart it if the routing engine becomes unresponsive.
+
+> ⚠️ **Important:** Do **not** set `admin off` in your Caddyfile, or the healthcheck will fail. The admin API only listens on `localhost` and is not exposed externally.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Clone the Repository
+### 1. Create your project directory
+
 ```bash
-git clone [https://github.com/dhimanparas20/caddy-sec.git](https://github.com/dhimanparas20/caddy-sec.git)
-cd caddy-sec
+mkdir caddy-sec && cd caddy-sec
 ```
 
-### 2. Create your Caddyfile
-Create a `Caddyfile` in the same directory (or map it to `./server/Caddyfile` as defined in your compose setup). See the **Blueprint Caddyfile** section below for the required security syntax.
+### 2. Create a `compose.yml`
 
-### 3. Build and Deploy
-Let Docker Compose handle the compilation and deployment in one step:
-```bash
-docker compose up -d --build
+```yaml
+services:
+  caddy:
+    image: dhimanparas20/caddy:latest
+    container_name: custom-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./caddy_data:/data
+      - ./caddy_config:/config
 ```
-*Note: The initial build will take a few minutes as it compiles the Go modules and the Coraza WAF engine from source.*
+
+### 3. Create your `Caddyfile`
+
+Copy the sample Caddyfile from this repo (see `Caddyfile.sample`) and customize it for your domain and backend:
+
+```bash
+cp Caddyfile.sample Caddyfile
+```
+
+### 4. Deploy
+
+```bash
+docker compose up -d
+```
+
+That's it. Caddy will automatically obtain and renew TLS certificates for your domain via Let's Encrypt.
 
 ---
 
-## 🛠️ The Blueprint Caddyfile
+## 🏗️ Architecture & Philosophy
 
-To utilize the compiled security modules and pass the native healthcheck, your `Caddyfile` must be configured correctly. Use this template as your baseline:
+The standard Caddy binary is phenomenal for automated HTTPS and easy routing, but it lacks native application-layer defense. **Caddy-Sec** implements a **Defense in Depth** architecture without sacrificing Caddy's signature performance.
 
-```caddyfile
-# --- Global Options ---
-{
-    # Required: Initialize WAF before routing
-    order coraza_waf first
-    
-    # Optional: Connect to local CrowdSec Engine
-    # crowdsec {
-    #     api_url http://crowdsec:8080
-    #     api_key "YOUR_API_KEY"
-    # }
-}
+### The Four Pillars
 
-example.com {
-    # --- 1. WAF (Coraza) ---
-    coraza_waf {
-        directives `
-            SecRuleEngine On
-            SecRule REQUEST_HEADERS:User-Agent "@pm Nikto masscan zmap" "id:100,phase:1,deny,status:403,msg:'Scanner Blocked'"
-            SecRule ARGS "@rx (?i)(union.*select|select.*from|insert.*into)" "id:101,phase:2,deny,status:403,msg:'SQLi Blocked'"
-            SecRule ARGS "@rx (?i)(<script>|javascript:)" "id:102,phase:2,deny,status:403,msg:'XSS Blocked'"
-        `
-    }
+```
+┌─────────────────────────────────────────────────────┐
+│                   Incoming Request                   │
+├──────────┬──────────┬──────────┬────────────────────┤
+│  Pillar 1│  Pillar 2│  Pillar 3│      Pillar 4      │
+│ CrowdSec │  Coraza  │   Rate   │    Healthcheck     │
+│ IP Block │   WAF    │  Limit   │   (Self-Healing)   │
+├──────────┴──────────┴──────────┴────────────────────┤
+│              Caddy Reverse Proxy                     │
+│           → your backend app:5050                    │
+└─────────────────────────────────────────────────────┘
+```
 
-    # --- 2. CrowdSec Bouncer ---
-    # Uncomment if CrowdSec is configured globally
-    # crowdsec
+1. **Smart IP Bouncer (CrowdSec)** — Drops connections from known malicious IPs before they reach your app.
+2. **Web Application Firewall (Coraza)** — Deep packet inspection blocks SQLi, XSS, and scanner fingerprints.
+3. **Intelligent Rate Limiting** — Prevents brute-force and API spam with per-IP sliding windows.
+4. **Native Self-Healing** — Docker-native healthcheck auto-restarts the container if Caddy hangs.
 
-    # --- 3. Smart Rate Limiting ---
-    # Protects dynamic routes but allows fast loading of static assets
-    @not_static {
-        not path /static*
-    }
-    rate_limit @not_static {
-        zone default_zone {
-            key {remote_host}
-            events 20
-            window 10s
-        }
-    }
+---
 
-    # --- 4. Internal Healthcheck (REQUIRED) ---
-    # Fulfills the Dockerfile HEALTHCHECK ping
-    handle /pingcaddy {
-        respond "pong" 200
-    }
+## 🔧 Configuration Guide
 
-    # --- 5. Application Routing ---
-    # Whitelist your specific endpoints here
-    @allowed_routes {
-        path /api* /auth* /docs* /openapi.json*
-    }
-    handle @allowed_routes {
-        reverse_proxy app:5050
-    }
+### Verify the Image
 
-    # --- 6. Default Deny ---
-    # Instantly drop unknown requests to save resources
-    handle {
-        abort
-    }
-}
+After starting the container, confirm all modules are loaded:
+
+```bash
+docker exec custom-caddy caddy list-modules | grep -E "coraza|crowdsec|rate"
+```
+
+Expected output:
+```
+http.handlers.crowdsec
+http.handlers.coraza_waf
+http.handlers.rate_limit
+```
+
+### Check Container Health
+
+```bash
+docker inspect --format='{{.State.Health.Status}}' custom-caddy
+```
+
+Expected output: `healthy`
+
+### View Logs
+
+```bash
+docker logs -f custom-caddy
 ```
 
 ---
 
 ## 🔒 Security Best Practices
 
-* **Test the WAF first:** Before moving to production, change `SecRuleEngine On` to `SecRuleEngine DetectionOnly`. Check your Caddy logs to ensure legitimate traffic isn't being flagged by the Coraza rules before enforcing them.
-* **Keep modules updated:** Periodically run `docker compose build --no-cache` to force `xcaddy` to pull the latest versions of the security modules from GitHub.
+| Practice | Details |
+|---|---|
+| **Test WAF in detection mode first** | Set `SecRuleEngine DetectionOnly` in your Caddyfile before going to `On`. Check logs to ensure legitimate traffic isn't being blocked. |
+| **Keep the image updated** | Periodically run `docker compose pull && docker compose up -d` to get the latest image with updated modules. |
+| **Don't expose the admin API** | The admin API listens on `localhost:2019` by default. Never bind it to `0.0.0.0`. |
+| **Use the default deny pattern** | End every site block with `handle { abort }` to silently drop unknown routes. |
+| **Persist your data** | Always mount `/data` and `/config` as volumes to preserve TLS certificates across restarts. |
+
+---
+
+## 🔄 Updating
+
+Since the image is pre-built on Docker Hub, updating is simple:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+No compilation. No waiting. The multi-arch manifest ensures you always get the right binary for your platform.
+
+---
+
+## 🖥️ Supported Platforms
+
+| Architecture | Devices |
+|---|---|
+| `linux/amd64` | Cloud VPS, desktops, Intel/AMD servers |
+| `linux/arm64` | Raspberry Pi 4/5, AWS Graviton, Apple Silicon (via Docker Desktop) |
+
+---
+
+## 📁 Repository Structure
+
+```
+.
+├── Dockerfile           # Multi-stage build (for maintainers / custom builds)
+├── compose.yml          # Production-ready Docker Compose stack
+├── Caddyfile.sample     # Fully documented sample Caddyfile
+└── README.md            # This file
+```
+
+---
+
+## 📝 License
+
+This project uses the [Caddy Web Server](https://caddyserver.com/) which is licensed under the Apache 2.0 License. All included modules are open source — see their respective repositories for license details.

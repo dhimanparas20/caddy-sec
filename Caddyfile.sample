@@ -1,0 +1,118 @@
+# ============================================================================
+#  Caddyfile.sample — Caddy-Sec Hardened Configuration
+#  Image: dhimanparas20/caddy:latest
+#
+#  INSTRUCTIONS:
+#    1. Copy this file:  cp Caddyfile.sample Caddyfile
+#    2. Replace "example.com" with your actual domain
+#    3. Replace "app:5050" with your backend service address
+#    4. Run: docker compose up -d
+# ============================================================================
+
+# --- Global Options Block ---------------------------------------------------
+# NOTE: Do NOT add "admin off" here — the Docker HEALTHCHECK depends on the
+#       admin API being available at localhost:2019.
+{
+	# Load the Coraza WAF before all other handlers
+	order coraza_waf first
+
+	# ── CrowdSec (Optional) ──
+	# Uncomment and configure if you have a CrowdSec engine running.
+	# crowdsec {
+	#     api_url  http://crowdsec:8080
+	#     api_key  YOUR_CROWDSEC_BOUNCER_API_KEY
+	# }
+}
+
+# --- Site Block --------------------------------------------------------------
+example.com {
+
+	# ╔══════════════════════════════════════════════════════════════════════╗
+	# ║  1. WEB APPLICATION FIREWALL (Coraza)                              ║
+	# ║     Inspects every request for malicious payloads.                 ║
+	# ║     Tip: Start with "SecRuleEngine DetectionOnly" to test,        ║
+	# ║          then switch to "On" once you've verified no false         ║
+	# ║          positives in the logs.                                    ║
+	# ╚══════════════════════════════════════════════════════════════════════╝
+	coraza_waf {
+		directives `
+            SecRuleEngine On
+
+            # Block known vulnerability scanners by User-Agent
+            SecRule REQUEST_HEADERS:User-Agent "@pm Nikto masscan zmap sqlmap" \
+                "id:100,phase:1,deny,status:403,msg:'Scanner Blocked'"
+
+            # Block SQL Injection patterns in query parameters
+            SecRule ARGS "@rx (?i)(union.*select|select.*from|insert.*into|drop\s+table)" \
+                "id:101,phase:2,deny,status:403,msg:'SQLi Blocked'"
+
+            # Block Cross-Site Scripting (XSS) patterns
+            SecRule ARGS "@rx (?i)(<script>|javascript:|onerror=|onload=)" \
+                "id:102,phase:2,deny,status:403,msg:'XSS Blocked'"
+
+            # Block path traversal attempts
+            SecRule REQUEST_URI "@rx (\.\./|\.\.\\\\)" \
+                "id:103,phase:1,deny,status:403,msg:'Path Traversal Blocked'"
+        `
+	}
+
+	# ╔══════════════════════════════════════════════════════════════════════╗
+	# ║  2. CROWDSEC BOUNCER (Optional)                                    ║
+	# ║     Uncomment if CrowdSec is configured in the global block.      ║
+	# ╚══════════════════════════════════════════════════════════════════════╝
+	# crowdsec
+
+	# ╔══════════════════════════════════════════════════════════════════════╗
+	# ║  3. RATE LIMITING                                                  ║
+	# ║     Limits requests to dynamic routes. Static assets are excluded  ║
+	# ║     so CSS/JS/images load without throttling.                      ║
+	# ╚══════════════════════════════════════════════════════════════════════╝
+	@not_static {
+		not path /static/* /assets/* /favicon.ico *.css *.js *.png *.jpg *.webp
+	}
+	rate_limit @not_static {
+		zone default_zone {
+			key    {remote_host}
+			events 20
+			window 10s
+		}
+	}
+
+	# ╔══════════════════════════════════════════════════════════════════════╗
+	# ║  4. APPLICATION ROUTING                                            ║
+	# ║     Whitelist only the routes your backend actually serves.        ║
+	# ║     Adjust paths and upstream address to match your app.           ║
+	# ╚══════════════════════════════════════════════════════════════════════╝
+	@allowed_routes {
+		path /api/* /auth/* /docs/* /openapi.json /health
+	}
+	handle @allowed_routes {
+		reverse_proxy app:5050
+	}
+
+	# ── Serve static files (optional) ──
+	# handle /static/* {
+	#     root * /srv
+	#     file_server
+	# }
+
+	# ╔══════════════════════════════════════════════════════════════════════╗
+	# ║  5. DEFAULT DENY                                                   ║
+	# ║     Any route not explicitly allowed above is silently dropped.    ║
+	# ║     This saves resources and reveals nothing to attackers.         ║
+	# ╚══════════════════════════════════════════════════════════════════════╝
+	handle {
+		abort
+	}
+}
+
+# --- Additional Site Blocks --------------------------------------------------
+# You can add more domains below. Each gets its own automatic TLS certificate.
+#
+# api.example.com {
+#     reverse_proxy api-service:8080
+# }
+#
+# dashboard.example.com {
+#     reverse_proxy grafana:3000
+# }
