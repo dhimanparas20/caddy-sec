@@ -54,7 +54,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          # Prefer a PAT for GHCR when publishing a package name that doesn't match the repo name (e.g. "itcyou"),
+          # Prefer a PAT for GHCR when publishing a package name that doesn't match the repo name (e.g. "caddy"),
           # otherwise pushes may fail with 403 depending on package ownership/settings.
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_TOKEN || secrets.MY_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
@@ -71,9 +71,9 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/itcyou:x86_64
-          cache-from: type=gha,scope=itcyou-amd64
-          cache-to: type=gha,mode=max,scope=itcyou-amd64
+            ${{ secrets.DOCKERHUB_USERNAME }}/caddy:x86_64
+          cache-from: type=gha,scope=caddy-amd64
+          cache-to: type=gha,mode=max,scope=caddy-amd64
 
       - name: Build and push (x86_64) to Docker Hub + GHCR
         if: ${{ env.PUSH_TO_GHCR == 'true' }}
@@ -84,10 +84,10 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/itcyou:x86_64
-            ghcr.io/${{ env.OWNER_LC }}/itcyou:x86_64
-          cache-from: type=gha,scope=itcyou-amd64
-          cache-to: type=gha,mode=max,scope=itcyou-amd64
+            ${{ secrets.DOCKERHUB_USERNAME }}/caddy:x86_64
+            ghcr.io/${{ env.OWNER_LC }}/caddy:x86_64
+          cache-from: type=gha,scope=caddy-amd64
+          cache-to: type=gha,mode=max,scope=caddy-amd64
 
       # -------------------------------
       # Build and Push for arm64
@@ -101,9 +101,9 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/itcyou:arm64
-          cache-from: type=gha,scope=itcyou-arm64
-          cache-to: type=gha,mode=max,scope=itcyou-arm64
+            ${{ secrets.DOCKERHUB_USERNAME }}/caddy:arm64
+          cache-from: type=gha,scope=caddy-arm64
+          cache-to: type=gha,mode=max,scope=caddy-arm64
 
       - name: Build and push (arm64) to Docker Hub + GHCR
         if: ${{ env.PUSH_TO_GHCR == 'true' }}
@@ -114,10 +114,10 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/itcyou:arm64
-            ghcr.io/${{ env.OWNER_LC }}/itcyou:arm64
-          cache-from: type=gha,scope=itcyou-arm64
-          cache-to: type=gha,mode=max,scope=itcyou-arm64
+            ${{ secrets.DOCKERHUB_USERNAME }}/caddy:arm64
+            ghcr.io/${{ env.OWNER_LC }}/caddy:arm64
+          cache-from: type=gha,scope=caddy-arm64
+          cache-to: type=gha,mode=max,scope=caddy-arm64
 
       # -------------------------------
       # Create multi-arch "latest" tag pointing to the arch-specific tags
@@ -125,14 +125,14 @@ jobs:
       - name: Create and push multi-arch manifest (Docker Hub)
         run: |
           docker buildx imagetools create \
-            -t ${{ secrets.DOCKERHUB_USERNAME }}/itcyou:latest \
-            ${{ secrets.DOCKERHUB_USERNAME }}/itcyou:x86_64 \
-            ${{ secrets.DOCKERHUB_USERNAME }}/itcyou:arm64
+            -t ${{ secrets.DOCKERHUB_USERNAME }}/caddy:latest \
+            ${{ secrets.DOCKERHUB_USERNAME }}/caddy:x86_64 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/caddy:arm64
 
       - name: Create and push multi-arch manifest (GHCR)
         if: ${{ env.PUSH_TO_GHCR == 'true' }}
         run: |
           docker buildx imagetools create \
-            -t ghcr.io/${{ env.OWNER_LC }}/itcyou:latest \
-            ghcr.io/${{ env.OWNER_LC }}/itcyou:x86_64 \
-            ghcr.io/${{ env.OWNER_LC }}/itcyou:arm64
+            -t ghcr.io/${{ env.OWNER_LC }}/caddy:latest \
+            ghcr.io/${{ env.OWNER_LC }}/caddy:x86_64 \
+            ghcr.io/${{ env.OWNER_LC }}/caddy:arm64
