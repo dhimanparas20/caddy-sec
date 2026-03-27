@@ -1,0 +1,12 @@
+services:
+  caddy:
+    image: dhimanparas20/caddy:latest
+    container_name: custom-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./caddy_data:/data
+      - ./caddy_config:/config
