@@ -125,4 +125,3 @@ example.com {
 
 * **Test the WAF first:** Before moving to production, change `SecRuleEngine On` to `SecRuleEngine DetectionOnly`. Check your Caddy logs to ensure legitimate traffic isn't being flagged by the Coraza rules before enforcing them.
 * **Keep modules updated:** Periodically run `docker compose build --no-cache` to force `xcaddy` to pull the latest versions of the security modules from GitHub.
-```
