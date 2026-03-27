@@ -1,10 +1,14 @@
 # Stage 1: Build the custom Caddy binary using xcaddy
 FROM caddy:builder AS builder
 
-RUN xcaddy build \
-    --with github.com/mholt/caddy-ratelimit \
-    --with github.com/hslatman/caddy-crowdsec-bouncer/http \
-    --with github.com/corazawaf/coraza-caddy/v2
+# Use BuildKit cache mounts so Go module and build caches persist between runs/architectures
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOPROXY=https://proxy.golang.org,direct \
+    xcaddy build \
+      --with github.com/mholt/caddy-ratelimit@latest \
+      --with github.com/hslatman/caddy-crowdsec-bouncer/http@latest \
+      --with github.com/corazawaf/coraza-caddy/v2@latest
 
 # Stage 2: Runtime
 FROM caddy:latest
