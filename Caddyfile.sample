@@ -1,87 +1,143 @@
 # ============================================================================
 #  Caddyfile.sample — Caddy-Sec Hardened Configuration
 #  Image: dhimanparas20/caddy:latest
+#  Repo:  https://github.com/dhimanparas20/caddy-sec
+#
+#  Modules in the image (enable in this file as needed):
+#    - rate_limit          (mholt/caddy-ratelimit)
+#    - coraza_waf          (corazawaf/coraza-caddy/v2)
+#    - crowdsec            (hslatman/caddy-crowdsec-bouncer)
+#    - cache + otter       (caddyserver/cache-handler + darkweak/storages/otter)
 #
 #  INSTRUCTIONS:
-#    1. Copy this file:  cp Caddyfile.sample Caddyfile
-#    2. Replace "example.com" with your actual domain
-#    3. Replace "app:5050" with your backend service address
-#    4. Run: docker compose up -d
+#    1. Copy:  cp Caddyfile.sample Caddyfile
+#    2. Replace "example.com" with your domain
+#    3. Replace "app:5050" with your backend (Compose service:port on the same network)
+#    4. Start with WAF DetectionOnly, watch logs, then switch to On
+#    5. Only enable `cache` on public/cacheable routes (see warnings below)
+#    6. Run: docker compose up -d
+#
+#  HEALTHCHECK:
+#    Compose should probe http://127.0.0.1:2019/config/ (admin API, localhost only).
+#    Do NOT set `admin off` if you use that probe.
+#    Never publish port 2019 to the host.
 # ============================================================================
 
-# --- Global Options Block ---------------------------------------------------
-# NOTE: Do NOT add "admin off" here — the Docker HEALTHCHECK depends on the
-#       admin API being available at localhost:2019.
+# --- Global options ----------------------------------------------------------
 {
-	# Load the Coraza WAF before all other handlers
+	# Keep admin on localhost (default) for Docker healthchecks.
+	# admin off   # ← breaks healthchecks that hit :2019
+
+	email you@example.com
+
+	# Coraza must run before other HTTP handlers
 	order coraza_waf first
 
-	# ── CrowdSec (Optional) ──
-	# Uncomment and configure if you have a CrowdSec engine running.
+	log {
+		output stderr
+		format json
+		level WARN
+	}
+
+	# ── HTTP cache (optional, Otter = in-memory, single Caddy) ──
+	# Uncomment to enable the cache module globally; still must add `cache`
+	# inside site/route blocks where you want caching.
+	#
+	# WARNING: Do NOT cache authenticated / personalized / cookie-session
+	# responses. Wrong cache config can leak private data between users.
+	#
+	# cache {
+	# 	ttl 5m
+	# 	otter
+	# }
+
+	# ── CrowdSec (optional) ──
+	# Requires a CrowdSec LAPI + bouncer API key on your network.
 	# crowdsec {
-	#     api_url  http://crowdsec:8080
-	#     api_key  YOUR_CROWDSEC_BOUNCER_API_KEY
+	# 	api_url http://crowdsec:8080
+	# 	api_key YOUR_CROWDSEC_BOUNCER_API_KEY
 	# }
 }
 
-# --- Site Block --------------------------------------------------------------
+# --- Shared snippets ---------------------------------------------------------
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
+(ping) {
+	handle /pingcaddy {
+		respond "pong" 200
+	}
+}
+
+# --- Example A: Hardened API gateway (allowlist + default deny) --------------
+# Best when the public surface is a small set of known paths.
+
 example.com {
+	import security_headers
+	import ping
+
+	encode zstd gzip
 
 	# ╔══════════════════════════════════════════════════════════════════════╗
-	# ║  1. WEB APPLICATION FIREWALL (Coraza)                              ║
-	# ║     Inspects every request for malicious payloads.                 ║
-	# ║     Tip: Start with "SecRuleEngine DetectionOnly" to test,        ║
-	# ║          then switch to "On" once you've verified no false         ║
-	# ║          positives in the logs.                                    ║
+	# ║  1. Coraza WAF                                                     ║
+	# ║  Start with DetectionOnly. Check logs for false positives, then    ║
+	# ║  change to: SecRuleEngine On                                       ║
+	# ║  Sample rules are a starter set — not a full OWASP CRS install.    ║
 	# ╚══════════════════════════════════════════════════════════════════════╝
 	coraza_waf {
 		directives `
-            SecRuleEngine On
+			SecRuleEngine DetectionOnly
 
-            # Block known vulnerability scanners by User-Agent
-            SecRule REQUEST_HEADERS:User-Agent "@pm Nikto masscan zmap sqlmap" \
-                "id:100,phase:1,deny,status:403,msg:'Scanner Blocked'"
+			# Block known vulnerability scanners by User-Agent
+			SecRule REQUEST_HEADERS:User-Agent "@pm Nikto masscan zmap sqlmap" \
+				"id:100,phase:1,deny,status:403,msg:'Scanner Blocked'"
 
-            # Block SQL Injection patterns in query parameters
-            SecRule ARGS "@rx (?i)(union.*select|select.*from|insert.*into|drop\s+table)" \
-                "id:101,phase:2,deny,status:403,msg:'SQLi Blocked'"
+			# Block common SQL Injection patterns in args
+			SecRule ARGS "@rx (?i)(union.*select|select.*from|insert.*into|drop\s+table)" \
+				"id:101,phase:2,deny,status:403,msg:'SQLi Blocked'"
 
-            # Block Cross-Site Scripting (XSS) patterns
-            SecRule ARGS "@rx (?i)(<script>|javascript:|onerror=|onload=)" \
-                "id:102,phase:2,deny,status:403,msg:'XSS Blocked'"
+			# Block common XSS patterns in args
+			SecRule ARGS "@rx (?i)(<script>|javascript:|onerror=|onload=)" \
+				"id:102,phase:2,deny,status:403,msg:'XSS Blocked'"
 
-            # Block path traversal attempts
-            SecRule REQUEST_URI "@rx (\.\./|\.\.\\\\)" \
-                "id:103,phase:1,deny,status:403,msg:'Path Traversal Blocked'"
-        `
+			# Block path traversal
+			SecRule REQUEST_URI "@rx (\.\./|\.\.\\\\)" \
+				"id:103,phase:1,deny,status:403,msg:'Path Traversal Blocked'"
+		`
 	}
 
 	# ╔══════════════════════════════════════════════════════════════════════╗
-	# ║  2. CROWDSEC BOUNCER (Optional)                                    ║
-	# ║     Uncomment if CrowdSec is configured in the global block.      ║
+	# ║  2. CrowdSec bouncer (optional)                                    ║
+	# ║  Uncomment only if global crowdsec { } is configured.              ║
 	# ╚══════════════════════════════════════════════════════════════════════╝
 	# crowdsec
 
 	# ╔══════════════════════════════════════════════════════════════════════╗
-	# ║  3. RATE LIMITING                                                  ║
-	# ║     Limits requests to dynamic routes. Static assets are excluded  ║
-	# ║     so CSS/JS/images load without throttling.                      ║
+	# ║  3. Rate limiting                                                  ║
+	# ║  Skip static-ish paths so assets are not throttled.                ║
 	# ╚══════════════════════════════════════════════════════════════════════╝
 	@not_static {
-		not path /static/* /assets/* /favicon.ico *.css *.js *.png *.jpg *.webp
+		not path /static/* /assets/* /favicon.ico *.css *.js *.png *.jpg *.webp /pingcaddy
 	}
 	rate_limit @not_static {
 		zone default_zone {
-			key    {remote_host}
+			key {remote_host}
 			events 20
 			window 10s
 		}
 	}
 
 	# ╔══════════════════════════════════════════════════════════════════════╗
-	# ║  4. APPLICATION ROUTING                                            ║
-	# ║     Whitelist only the routes your backend actually serves.        ║
-	# ║     Adjust paths and upstream address to match your app.           ║
+	# ║  4. Application routing (allowlist)                                ║
+	# ║  Adjust paths + upstream to match your app.                        ║
 	# ╚══════════════════════════════════════════════════════════════════════╝
 	@allowed_routes {
 		path /api/* /auth/* /docs/* /openapi.json /health
@@ -90,29 +146,92 @@ example.com {
 		reverse_proxy app:5050
 	}
 
-	# ── Serve static files (optional) ──
+	# Optional static files from a volume mounted at /srv
 	# handle /static/* {
-	#     root * /srv
-	#     file_server
+	# 	root * /srv
+	# 	file_server
 	# }
 
 	# ╔══════════════════════════════════════════════════════════════════════╗
-	# ║  5. DEFAULT DENY                                                   ║
-	# ║     Any route not explicitly allowed above is silently dropped.    ║
-	# ║     This saves resources and reveals nothing to attackers.         ║
+	# ║  5. Default deny — unknown routes are aborted (no fingerprint)     ║
 	# ╚══════════════════════════════════════════════════════════════════════╝
 	handle {
 		abort
 	}
 }
 
-# --- Additional Site Blocks --------------------------------------------------
-# You can add more domains below. Each gets its own automatic TLS certificate.
+# --- Example B: Simple full-site reverse proxy -------------------------------
+# Use when the backend owns routing (SPA / full web app). Still add WAF /
+# rate_limit / CrowdSec as needed. Prefer Example A for strict APIs.
+
+# app.example.com {
+# 	import security_headers
+# 	import ping
+# 	encode zstd gzip
+#
+# 	coraza_waf {
+# 		directives `
+# 			SecRuleEngine DetectionOnly
+# 		`
+# 	}
+# 	# crowdsec
+#
+# 	rate_limit {
+# 		zone app_zone {
+# 			key {remote_host}
+# 			events 50
+# 			window 10s
+# 		}
+# 	}
+#
+# 	reverse_proxy app:5050
+# }
+
+# --- Example C: Public static / CDN-like site WITH cache ---------------------
+# Safe only for public, non-personalized responses.
+# Requires global `cache { ttl … otter }` to be uncommented above.
+
+# static.example.com {
+# 	import security_headers
+# 	import ping
+# 	encode zstd gzip
+#
+# 	@cacheable {
+# 		method GET HEAD
+# 	}
+# 	cache @cacheable
+#
+# 	root * /srv
+# 	file_server
+# }
+
+# --- Example D: Cache in front of a public upstream (advanced) ---------------
+# Only for clearly public GET/HEAD. Never enable for logged-in apps.
+
+# cdn.example.com {
+# 	import security_headers
+#
+# 	@cacheable {
+# 		method GET HEAD
+# 	}
+# 	cache @cacheable
+#
+# 	reverse_proxy origin:8080
+# }
+
+# --- More sites --------------------------------------------------------------
+# Each hostname gets its own automatic TLS certificate when DNS points here.
 #
 # api.example.com {
-#     reverse_proxy api-service:8080
+# 	import security_headers
+# 	import ping
+# 	reverse_proxy api-service:8080
 # }
 #
 # dashboard.example.com {
-#     reverse_proxy grafana:3000
+# 	import security_headers
+# 	basic_auth {
+# 		admin JDJhJDEyJ...   # bcrypt hash
+# 	}
+# 	reverse_proxy grafana:3000
 # }
