@@ -1,52 +1,68 @@
-# 🛡️ Caddy-Sec: The Hardened Web Proxy
-
-A pre-built, production-ready [Caddy Web Server](https://caddyserver.com/) image compiled with enterprise-grade security modules. No need to build from source — just pull and deploy.
-
+# Caddy-Sec: Hardened Caddy with WAF, CrowdSec, Rate Limit & Cache
+A pre-built, production-oriented [Caddy](https://caddyserver.com/) image compiled with security and performance modules via
+[xcaddy](https://github.com/caddyserver/xcaddy). Pull and deploy — no local Go build required.
 **Docker Hub:** [hub.docker.com/r/dhimanparas20/caddy](https://hub.docker.com/r/dhimanparas20/caddy)
-
+**Source:** [github.com/dhimanparas20/caddy-sec](https://github.com/dhimanparas20/caddy-sec)
 ```bash
 docker pull dhimanparas20/caddy:latest
 ```
-
-> ✅ Supports **AMD64 (x86_64)** and **ARM64 (aarch64/Raspberry Pi)**
-> — a single `docker pull` automatically fetches the correct architecture.
-
+> Multi-arch: **linux/amd64** and **linux/arm64** (Raspberry Pi, Graviton, Apple Silicon). One `docker pull` selects the right digests.
 ---
-
-## 📦 What's Inside
-
-This image is built on top of the official `caddy:latest` image with the following modules compiled in via [xcaddy](https://github.com/caddyserver/xcaddy):
-
-| Module | Purpose |
-|---|---|
-| [mholt/caddy-ratelimit](https://github.com/mholt/caddy-ratelimit) | Intelligent per-IP rate limiting with sliding windows |
-| [corazawaf/coraza-caddy/v2](https://github.com/corazawaf/coraza-caddy) | Web Application Firewall — blocks SQLi, XSS, and vulnerability scanners using OWASP rules |
-| [hslatman/caddy-crowdsec-bouncer](https://github.com/hslatman/caddy-crowdsec-bouncer) | CrowdSec integration — auto-bans known malicious IPs, botnets, and DDoS nodes |
-
-### Built-in Healthcheck
-
-The image includes a native Docker `HEALTHCHECK` that pings Caddy's built-in admin API:
-
+## What's Inside
+Built on official `caddy:latest`, with these modules compiled in:
+| Module | Package | Purpose |
+|--------|---------|---------|
+| **Rate limit** | [mholt/caddy-ratelimit](https://github.com/mholt/caddy-ratelimit) | Per-IP / sliding-window request limiting |
+| **WAF** | [corazawaf/coraza-caddy/v2](https://github.com/corazawaf/coraza-caddy) | Application-layer filtering (SQLi, XSS, scanners, custom rules) |
+| **CrowdSec bouncer** | [hslatman/caddy-crowdsec-bouncer](https://github.com/hslatman/caddy-crowdsec-bouncer) | Reject decisions from a CrowdSec LAPI
+(known bad IPs / bots) |
+| **HTTP cache** | [caddyserver/cache-handler](https://github.com/caddyserver/cache-handler) | Reverse-proxy response cache (Souin-based) |
+| **Otter storage** | [darkweak/storages/otter](https://github.com/darkweak/storages) | Fast **in-memory** cache backend for a single Caddy instance |
+> Modules are **compiled into the binary**. Nothing is active until you enable it in your **Caddyfile** (and, for CrowdSec, run a CrowdSec engine).
+### Dockerfile (what we build)
+```dockerfile
+xcaddy build \
+  --with github.com/mholt/caddy-ratelimit@latest \
+  --with github.com/hslatman/caddy-crowdsec-bouncer/http@latest \
+  --with github.com/corazawaf/coraza-caddy/v2@latest \
+  --with github.com/caddyserver/cache-handler \
+  --with github.com/darkweak/storages/otter/caddy
 ```
-http://localhost:2019/config/
-```
-
-Docker Compose, Swarm, and orchestrators like Portainer will automatically detect container health and can restart it if the routing engine becomes unresponsive.
-
-> ⚠️ **Important:** Do **not** set `admin off` in your Caddyfile, or the healthcheck will fail. The admin API only listens on `localhost` and is not exposed externally.
-
 ---
+## Architecture
 
-## 🚀 Quick Start
+                    Incoming HTTPS request
+                              │
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+     CrowdSec            Coraza WAF          Rate limit
+   (optional ban)      (payload rules)      (abuse throttle)
+          │                   │                   │
+          └───────────────────┼───────────────────┘
+                              ▼
+                     HTTP cache (optional)
+                     cache-handler + Otter
+                              ▼
+                      Reverse proxy / static
+                              ▼
+                         Your backends
 
-### 1. Create your project directory
-
+| Layer | What it does | Needs extra config? |
+|-------|----------------|---------------------|
+| CrowdSec | Drop IPs already banned by CrowdSec | Yes — CrowdSec LAPI + API key |
+| Coraza | Inspect request contents | Yes — `coraza_waf` directives / CRS |
+| Rate limit | Cap request rate per key (usually IP) | Yes — `rate_limit` zones |
+| Cache | Serve repeatable GET/HEAD responses from memory | Yes — global `cache` + per-route `cache` |
+| Caddy core | TLS, routing, `reverse_proxy`, encode, etc. | Your site blocks |
+**Otter** keeps cached bodies in process memory (fast, single-node). Cache is empty after container restart. For multi-Caddy / shared cache later,
+swap in a Redis/Valkey storage module at build time.
+---
+## Quick Start
+### 1. Project dir
 ```bash
 mkdir caddy-sec && cd caddy-sec
 ```
-
-### 2. Create a `compose.yml`
-
+### 2. `compose.yml`
 ```yaml
 services:
   caddy:
@@ -57,134 +73,136 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy_data:/data
       - ./caddy_config:/config
+    # Admin API is localhost-only inside the container (do NOT use admin off
+    # if you rely on this check).
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 ```
-
-### 3. Create your `Caddyfile`
-
-Copy the sample Caddyfile from this repo (see `Caddyfile.sample`) and customize it for your domain and backend:
-
+### 3. Caddyfile
 ```bash
 cp Caddyfile.sample Caddyfile
-```
-
-### 4. Deploy
-
-```bash
+# edit domain + upstream, then:
 docker compose up -d
 ```
-
-That's it. Caddy will automatically obtain and renew TLS certificates for your domain via Let's Encrypt.
-
+Caddy obtains and renews Let's Encrypt certificates automatically when DNS points at this host.
 ---
-
-## 🏗️ Architecture & Philosophy
-
-The standard Caddy binary is phenomenal for automated HTTPS and easy routing, but it lacks native application-layer defense. **Caddy-Sec** implements a **Defense in Depth** architecture without sacrificing Caddy's signature performance.
-
-### The Four Pillars
-
-```
-┌─────────────────────────────────────────────────────┐
-│                   Incoming Request                   │
-├──────────┬──────────┬──────────┬────────────────────┤
-│  Pillar 1│  Pillar 2│  Pillar 3│      Pillar 4      │
-│ CrowdSec │  Coraza  │   Rate   │    Healthcheck     │
-│ IP Block │   WAF    │  Limit   │   (Self-Healing)   │
-├──────────┴──────────┴──────────┴────────────────────┤
-│              Caddy Reverse Proxy                     │
-│           → your backend app:5050                    │
-└─────────────────────────────────────────────────────┘
-```
-
-1. **Smart IP Bouncer (CrowdSec)** — Drops connections from known malicious IPs before they reach your app.
-2. **Web Application Firewall (Coraza)** — Deep packet inspection blocks SQLi, XSS, and scanner fingerprints.
-3. **Intelligent Rate Limiting** — Prevents brute-force and API spam with per-IP sliding windows.
-4. **Native Self-Healing** — Docker-native healthcheck auto-restarts the container if Caddy hangs.
-
----
-
-## 🔧 Configuration Guide
-
-### Verify the Image
-
-After starting the container, confirm all modules are loaded:
-
+## Verify the image
 ```bash
-docker exec custom-caddy caddy list-modules | grep -E "coraza|crowdsec|rate"
+docker exec custom-caddy caddy list-modules | grep -Ei 'rate_limit|coraza|crowdsec|cache|otter'
 ```
-
-Expected output:
-```
-http.handlers.crowdsec
-http.handlers.coraza_waf
+You should see modules similar to:
+```text
 http.handlers.rate_limit
+http.handlers.coraza_waf
+http.handlers.crowdsec
+http.handlers.cache
+...
 ```
-
-### Check Container Health
-
+Exact names can vary slightly by module version; absence of a name means that build did not include it.
 ```bash
 docker inspect --format='{{.State.Health.Status}}' custom-caddy
-```
-
-Expected output: `healthy`
-
-### View Logs
-
-```bash
 docker logs -f custom-caddy
 ```
-
 ---
+## Configuration notes
+### Healthcheck / admin API
+- Prefer a **Compose** `healthcheck` (as above). The image Dockerfile currently has the image-level `HEALTHCHECK` **commented out**.
+- Healthchecks that hit `http://127.0.0.1:2019/config/` require the admin endpoint to stay enabled (default). **Do not set `admin off`** if you use
+that probe.
+- Never publish `:2019` to the host or bind admin to `0.0.0.0`.
+### Rate limiting
+Already demonstrated in `Caddyfile.sample`. Tune `events` / `window` per app; exclude static paths so assets are not throttled.
+### Coraza (WAF)
+- Start with `SecRuleEngine DetectionOnly`, watch logs, then switch to `On`.
+- Sample rules in `Caddyfile.sample` are a **starting point**, not a full OWASP CRS install. For production CRS, mount rule files and point Coraza at
+them.
+- WAF adds CPU latency — enable where risk justifies it.
+### CrowdSec
+1. Run a CrowdSec instance (LAPI).
+2. Create a bouncer API key.
+3. Uncomment/configure the global `crowdsec { ... }` block and site `crowdsec` directive (see `Caddyfile.sample`).
+Without a live LAPI, leave CrowdSec disabled in the Caddyfile (modules can still be present in the binary).
+### HTTP cache (cache-handler + Otter)
+**Capability is in the image; caching is off until you configure it.**
+Minimal pattern:
+```caddy
+{
+    cache {
+        ttl 5m
+        otter
+    }
+}
 
-## 🔒 Security Best Practices
+static.example.com {
+      cache
+      root * /srv
+      file_server
+}
 
-| Practice | Details |
-|---|---|
-| **Test WAF in detection mode first** | Set `SecRuleEngine DetectionOnly` in your Caddyfile before going to `On`. Check logs to ensure legitimate traffic isn't being blocked. |
-| **Keep the image updated** | Periodically run `docker compose pull && docker compose up -d` to get the latest image with updated modules. |
-| **Don't expose the admin API** | The admin API listens on `localhost:2019` by default. Never bind it to `0.0.0.0`. |
-| **Use the default deny pattern** | End every site block with `handle { abort }` to silently drop unknown routes. |
-| **Persist your data** | Always mount `/data` and `/config` as volumes to preserve TLS certificates across restarts. |
+Or cache only safe public GETs in front of a proxy:
 
+cdn.example.com {
+      @cacheable {
+              method GET HEAD
+      }
+      cache @cacheable
+      reverse_proxy app:8080
+}
+
+**Do cache:** public marketing pages, immutable static assets, clearly public cacheable APIs.
+**Do not cache blindly:** authenticated apps, cookie/session responses, personalized HTML, WebSockets, admin UIs, anything with `Authorization` /
+private `Set-Cookie`.
+Wrong cache config can leak private responses between users. Prefer `Cache-Control` from the origin and short TTLs until you trust the setup. Inspect
+`Cache-Status` response headers when debugging.
 ---
-
-## 🔄 Updating
-
-Since the image is pre-built on Docker Hub, updating is simple:
-
+## Security best practices
+| Practice | Detail |
+|----------|--------|
+| Detection mode first | Coraza `DetectionOnly` before `On` |
+| Least privilege routes | Prefer allowlists + `handle { abort }` for unknown paths (see sample) |
+| Persist TLS state | Always mount `/data` and `/config` |
+| Keep image fresh | `docker compose pull && docker compose up -d` |
+| Admin API private | Localhost only; never expose `:2019` |
+| Cache with intent | Only on public, idempotent responses |
+| CrowdSec optional | Don’t enable the directive without a working LAPI |
+---
+## Updating
 ```bash
 docker compose pull
 docker compose up -d
 ```
-
-No compilation. No waiting. The multi-arch manifest ensures you always get the right binary for your platform.
-
+Multi-arch manifests mean the same tag works on amd64 and arm64.
 ---
-
-## 🖥️ Supported Platforms
-
-| Architecture | Devices |
-|---|---|
-| `linux/amd64` | Cloud VPS, desktops, Intel/AMD servers |
-| `linux/arm64` | Raspberry Pi 4/5, AWS Graviton, Apple Silicon (via Docker Desktop) |
-
----
-
-## 📁 Repository Structure
-
+## Rebuild from source (maintainers)
+```bash
+git clone https://github.com/dhimanparas20/caddy-sec.git
+cd caddy-sec
+docker buildx build --platform linux/amd64,linux/arm64 -t dhimanparas20/caddy:latest --push .
 ```
+Requires BuildKit (for Go module cache mounts in the Dockerfile).
+---
+## Supported platforms
+| Arch | Typical hosts |
+|------|----------------|
+| `linux/amd64` | Most VPS / bare metal |
+| `linux/arm64` | Pi 4/5, Graviton, Apple Silicon (Docker Desktop) |
+---
+## Repository layout
+```text
 .
-├── Dockerfile           # Multi-stage build (for maintainers / custom builds)
-├── compose.yml          # Production-ready Docker Compose stack
-├── Caddyfile.sample     # Fully documented sample Caddyfile
-└── README.md            # This file
+├── Dockerfile           # xcaddy multi-stage build
+├── compose.yml          # Example Compose stack
+├── Caddyfile.sample     # Documented starter Caddyfile
+├── .github/             # CI / image publish workflows
+└── README.md
 ```
-
 ---
-
-## 📝 License
-
-This project uses the [Caddy Web Server](https://caddyserver.com/) which is licensed under the Apache 2.0 License. All included modules are open source — see their respective repositories for license details.
+## License
+Caddy is Apache-2.0. Bundled modules are open source under their own licenses — see each upstream repository.
